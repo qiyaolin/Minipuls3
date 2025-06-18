@@ -132,10 +132,12 @@ class MinipulsController:
         self.send_buffered_command("SK")
 
     def start_forward(self):
-        self.send_buffered_command("K>")
+        # Do not wait internally so caller controls timing
+        self.send_buffered_command("K>", wait=False)
 
     def start_backward(self):
-        self.send_buffered_command("K<")
+        # Do not wait internally so caller controls timing
+        self.send_buffered_command("K<", wait=False)
 
     def stop(self):
         self.send_buffered_command("KH")
