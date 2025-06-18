@@ -104,18 +104,22 @@ class MinipulsController:
                 self.logger(f"Error during disconnect: {e}")
         self.is_connected = False
 
-    def send_buffered_command(self, command):
-        if not self.is_connected: self.logger("Error: Pump not connected."); return
+    def send_buffered_command(self, command, wait=True):
+        if not self.is_connected:
+            self.logger("Error: Pump not connected.")
+            return
 
         if self.debug_mode:
             self.logger(f"DEBUG CMD > {command}")
-            time.sleep(self.command_interval)
+            if wait:
+                time.sleep(self.command_interval)
             return
 
-        full_command = b'\n' + command.encode('ascii') + b'\r'
-        self.logger(f"Sending command: {command}");
-        self.ser.write(full_command);
-        time.sleep(self.command_interval)
+        full_command = b"\n" + command.encode("ascii") + b"\r"
+        self.logger(f"Sending command: {command}")
+        self.ser.write(full_command)
+        if wait:
+            time.sleep(self.command_interval)
 
     def set_command_interval(self, interval):
         self.command_interval = interval
@@ -136,11 +140,11 @@ class MinipulsController:
     def stop(self):
         self.send_buffered_command("KH")
 
-    def set_speed(self, rpm):
+    def set_speed(self, rpm, wait=True):
         if not (0 <= rpm <= 48):
             rpm = max(0, min(48, rpm))
             self.logger(f"Warning: RPM value clamped to {rpm}.")
-        self.send_buffered_command(f"R{int(rpm * 100)}")
+        self.send_buffered_command(f"R{int(rpm * 100)}", wait=wait)
 
 
 # ==============================================================================
@@ -551,6 +555,12 @@ class PumpControlUI(tk.Tk):
         self.sequence_tree.yview_moveto(scroll_pos[0])
 
     def _get_expanded_sequence_data(self, sequence_data):
+        command_interval = getattr(self, "pump_controller", None)
+        if command_interval:
+            command_interval = command_interval.command_interval
+        else:
+            command_interval = self.RAMP_STEP_INTERVAL_S
+
         time_points, rpm_points = [0], [0]
         cycle_spans, phase_markers, phase_directions = [], [], []
         current_rpm, elapsed_time_s = 0.0, 0.0
@@ -563,33 +573,42 @@ class PumpControlUI(tk.Tk):
             instruction = sequence_copy[pc]
             if instruction['type'] == 'Phase':
                 phase_markers.append(
-                    {'time': elapsed_time_s, 'rpm': current_rpm, 'step': instruction['original_index'] + 1})
+                    {
+                        "time": elapsed_time_s,
+                        "rpm": current_rpm,
+                        "step": instruction["original_index"] + 1,
+                    }
+                )
 
-                duration_s = instruction['duration']
-                if instruction['unit'] == 'min':
+                duration_s = instruction["duration"]
+                if instruction["unit"] == "min":
                     duration_s *= 60
-                elif instruction['unit'] == 'hr':
+                elif instruction["unit"] == "hr":
                     duration_s *= 3600
 
-                # Store the end time of this phase and its direction
+                # Store the end time of this phase including the final command delay
                 phase_directions.append(
-                    {'end_time': elapsed_time_s + duration_s, 'direction': instruction['direction']})
+                    {
+                        "end_time": elapsed_time_s + duration_s + command_interval,
+                        "direction": instruction["direction"],
+                    }
+                )
 
-                target_rpm = instruction['rpm']
+                target_rpm = instruction["rpm"]
 
-                if instruction['mode'] == 'Fixed':
+                if instruction["mode"] == "Fixed":
                     if current_rpm != target_rpm:
                         time_points.append(elapsed_time_s)
                         rpm_points.append(target_rpm)
 
-                elif instruction['mode'] == 'Ramp':
-                    num_steps = int(duration_s / self.RAMP_STEP_INTERVAL_S) if duration_s > 0 else 1
+                elif instruction["mode"] == "Ramp":
+                    num_steps = int(duration_s / command_interval) if duration_s > 0 else 1
                     rpm_increment = (target_rpm - current_rpm) / num_steps
                     for i in range(num_steps):
-                        time_points.append(elapsed_time_s + (i + 1) * self.RAMP_STEP_INTERVAL_S)
+                        time_points.append(elapsed_time_s + (i + 1) * command_interval)
                         rpm_points.append(current_rpm + (i + 1) * rpm_increment)
 
-                elapsed_time_s += duration_s
+                elapsed_time_s += duration_s + command_interval
                 time_points.append(elapsed_time_s)
                 rpm_points.append(target_rpm)
                 current_rpm = target_rpm
