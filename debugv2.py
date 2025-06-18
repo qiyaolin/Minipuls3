@@ -586,10 +586,10 @@ class PumpControlUI(tk.Tk):
                 elif instruction["unit"] == "hr":
                     duration_s *= 3600
 
-                # Store the end time of this phase including the final command delay
+                # Store the end time of this phase
                 phase_directions.append(
                     {
-                        "end_time": elapsed_time_s + duration_s + command_interval,
+                        "end_time": elapsed_time_s + duration_s,
                         "direction": instruction["direction"],
                     }
                 )
@@ -603,14 +603,18 @@ class PumpControlUI(tk.Tk):
 
                 elif instruction["mode"] == "Ramp":
                     num_steps = int(duration_s / command_interval) if duration_s > 0 else 1
+                    if num_steps == 0:
+                        num_steps = 1
+                    time_step = duration_s / num_steps
                     rpm_increment = (target_rpm - current_rpm) / num_steps
                     for i in range(num_steps):
-                        time_points.append(elapsed_time_s + (i + 1) * command_interval)
+                        time_points.append(elapsed_time_s + (i + 1) * time_step)
                         rpm_points.append(current_rpm + (i + 1) * rpm_increment)
 
-                elapsed_time_s += duration_s + command_interval
-                time_points.append(elapsed_time_s)
-                rpm_points.append(target_rpm)
+                elapsed_time_s += duration_s
+                if instruction["mode"] != "Ramp":
+                    time_points.append(elapsed_time_s)
+                    rpm_points.append(target_rpm)
                 current_rpm = target_rpm
                 pc += 1
 
@@ -750,32 +754,41 @@ class PumpControlUI(tk.Tk):
         phase_start_time = time.perf_counter()
 
         if phase['mode'] == 'Fixed':
-            self.pump_controller.set_speed(target_rpm)
+            self.pump_controller.set_speed(target_rpm, wait=False)
             end_time = phase_start_time + duration_s
             while time.perf_counter() < end_time:
-                if self.stop_event.is_set(): break
+                if self.stop_event.is_set():
+                    break
                 self.stop_event.wait(0.05)
 
         elif phase['mode'] == 'Ramp':
-            time_in_phase = 0
-            while time_in_phase < duration_s:
-                if self.stop_event.is_set(): break
-                ramp_fraction = time_in_phase / duration_s if duration_s > 0 else 1.0
+            cmd_interval = self.pump_controller.command_interval
+            num_steps = int(duration_s / cmd_interval) if duration_s > 0 else 1
+            if num_steps == 0:
+                num_steps = 1
+            step_time = duration_s / num_steps
+            for i in range(1, num_steps + 1):
+                target_time = phase_start_time + i * step_time
+                ramp_fraction = i / num_steps
                 current_rpm_in_phase = start_rpm + (target_rpm - start_rpm) * ramp_fraction
-                self.pump_controller.set_speed(current_rpm_in_phase)
-                time_in_phase = time.perf_counter() - phase_start_time
+                wait_time = target_time - time.perf_counter()
+                if wait_time > 0:
+                    if self.stop_event.wait(wait_time):
+                        break
+                if self.stop_event.is_set():
+                    break
+                self.pump_controller.set_speed(current_rpm_in_phase, wait=False)
 
         if not self.stop_event.is_set():
-            self.pump_controller.set_speed(target_rpm)
-            # Wait for any remaining time in the phase to ensure total duration is accurate
-            remaining_time = duration_s - (time.perf_counter() - phase_start_time)
-            if remaining_time > 0:
-                self.stop_event.wait(remaining_time)
+            # Ensure total phase duration is respected
+            remaining = (phase_start_time + duration_s) - time.perf_counter()
+            if remaining > 0:
+                self.stop_event.wait(remaining)
             return target_rpm
         else:
-            final_elapsed_in_phase = time.perf_counter() - phase_start_time
+            final_elapsed = time.perf_counter() - phase_start_time
             if phase['mode'] == 'Ramp' and duration_s > 0:
-                ramp_fraction = min(1.0, final_elapsed_in_phase / duration_s)
+                ramp_fraction = min(1.0, final_elapsed / duration_s)
                 return start_rpm + (target_rpm - start_rpm) * ramp_fraction
             else:
                 return target_rpm
