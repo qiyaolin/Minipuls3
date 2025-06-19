@@ -145,6 +145,15 @@ class MinipulsController:
     def stop(self):
         self.send_buffered_command("KH")
 
+    def master_reset(self):
+        self.send_buffered_command("$")
+        if not self.debug_mode:
+            time.sleep(0.5)
+        if self.ser and self.ser.is_open:
+            self.ser.close()
+            self.ser = None
+        self.is_connected = False
+
     def set_speed(self, rpm, wait=True):
         if not (0 <= rpm <= 48):
             rpm = max(0, min(48, rpm))
@@ -413,10 +422,11 @@ class PumpControlUI(tk.Tk):
         if self.pump_controller.connect():
             status_text = "Status: Connected (DEBUG)" if is_debug else "Status: Connected"
             self.status_label.config(text=status_text, foreground="#27ae60")
-            self.connect_btn.config(state=tk.DISABLED);
+            self.connect_btn.config(state=tk.DISABLED)
             self.disconnect_btn.config(state=tk.NORMAL)
+            self.reset_btn.config(state=tk.NORMAL)
             self.set_interval_btn.config(state=tk.NORMAL)
-            self._set_manual_controls_state(tk.NORMAL);
+            self._set_manual_controls_state(tk.NORMAL)
             self.run_seq_btn.config(state=tk.NORMAL)
             self.pump_controller.set_remote_mode()
         else:
@@ -424,13 +434,33 @@ class PumpControlUI(tk.Tk):
             self.pump_controller = None
 
     def _disconnect_pump(self):
-        if self.pump_controller: self.pump_controller.set_keypad_mode(); self.pump_controller.disconnect(); self.pump_controller = None
+        if self.pump_controller:
+            self.pump_controller.set_keypad_mode()
+            self.pump_controller.disconnect()
+            self.pump_controller = None
         self.status_label.config(text="Status: Disconnected", foreground="#c0392b")
-        self.connect_btn.config(state=tk.NORMAL);
+        self.connect_btn.config(state=tk.NORMAL)
         self.disconnect_btn.config(state=tk.DISABLED)
+        self.reset_btn.config(state=tk.DISABLED)
         self.set_interval_btn.config(state=tk.DISABLED)
-        self._set_manual_controls_state(tk.DISABLED);
+        self._set_manual_controls_state(tk.DISABLED)
         self.run_seq_btn.config(state=tk.DISABLED)
+
+    def _master_reset(self):
+        if not self.pump_controller or not self.pump_controller.is_connected:
+            self._log("Pump not connected. Cannot perform master reset.")
+            return
+
+        self._log("Performing master reset...")
+        self.pump_controller.master_reset()
+        self.status_label.config(text="Status: Disconnected", foreground="#c0392b")
+        self.connect_btn.config(state=tk.NORMAL)
+        self.disconnect_btn.config(state=tk.DISABLED)
+        self.reset_btn.config(state=tk.DISABLED)
+        self.set_interval_btn.config(state=tk.DISABLED)
+        self._set_manual_controls_state(tk.DISABLED)
+        self.run_seq_btn.config(state=tk.DISABLED)
+        self.pump_controller = None
 
     def _set_command_interval(self):
         if not (self.pump_controller and self.pump_controller.is_connected):
@@ -663,6 +693,9 @@ class PumpControlUI(tk.Tk):
             self._log("Sequence run cancelled by user.");
             return
 
+        if self.pump_controller and self.pump_controller.is_connected:
+            self.pump_controller.set_remote_mode()
+
         # Pre-calculate and store the entire plan
         self.plot_data = self._get_expanded_sequence_data(self.sequence_data)
         self.plan_time_points = self.plot_data['time_points']
@@ -845,6 +878,10 @@ class PumpControlUI(tk.Tk):
         if not self.sequence_is_running: return  # Prevent double-calls
         self.sequence_is_running = False
 
+        if self.pump_controller and self.pump_controller.is_connected:
+            self.pump_controller.stop()
+            time.sleep(0.5)
+
         self.run_seq_btn.config(state=tk.NORMAL);
         self.stop_seq_btn.config(state=tk.DISABLED)
 
@@ -1009,8 +1046,11 @@ class PumpControlUI(tk.Tk):
         self.disconnect_btn = ttk.Button(frame, text="✖ Disconnect", command=self._disconnect_pump, state=tk.DISABLED)
         self.disconnect_btn.grid(row=4, column=1, pady=5, padx=5, sticky="ew")
 
+        self.reset_btn = ttk.Button(frame, text="⚠ Master Reset", command=self._master_reset, state=tk.DISABLED)
+        self.reset_btn.grid(row=5, column=0, columnspan=2, pady=(0,5), padx=5, sticky="ew")
+
         self.status_label = ttk.Label(frame, text="Status: Disconnected", foreground="#c0392b", font=self.status_font)
-        self.status_label.grid(row=5, column=0, columnspan=2, sticky=tk.W, padx=5, pady=5)
+        self.status_label.grid(row=6, column=0, columnspan=2, sticky=tk.W, padx=5, pady=5)
 
     def _create_manual_control_panel(self, parent):
         self.manual_frame = ttk.LabelFrame(parent, text="2. Manual Control", padding="10")
