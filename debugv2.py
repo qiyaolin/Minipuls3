@@ -118,8 +118,11 @@ class MinipulsController:
         full_command = b"\n" + command.encode("ascii") + b"\r"
         self.logger(f"Sending command: {command}")
         self.ser.write(full_command)
+
         if wait:
-            time.sleep(self.command_interval)
+            response = self.ser.read(1)
+            if response != b'.':
+                self.logger(f"Warning: Unexpected response {response!r}")
 
     def set_command_interval(self, interval):
         self.command_interval = interval
